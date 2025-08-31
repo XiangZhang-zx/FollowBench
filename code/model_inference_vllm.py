@@ -41,14 +41,20 @@ def generate_responses(model, sampling_params, data, args, device):
     responses = model.generate(prompts, sampling_params=sampling_params)
 
     for i, response in enumerate(responses):
-        output_list.append({'prompt': data[i]["prompt_new"], "choices": [{"message": {"content": response.outputs[0].text.split("<|im_end|>")[0]}}]})
+        # Clean up the response text by removing any chat template artifacts
+        response_text = response.outputs[0].text.strip()
+        # Remove common chat template endings
+        for ending in ["<|im_end|>", "<|eot_id|>", "</s>"]:
+            if ending in response_text:
+                response_text = response_text.split(ending)[0]
+        output_list.append({'prompt': data[i]["prompt_new"], "choices": [{"message": {"content": response_text.strip()}}]})
     return output_list
 
 
 def run_inference(args):
     devices = args.gpus.split(",")
-    model = LLM(model=args.model_path, tensor_parallel_size=args.num_gpus, trust_remote_code=True)
-    sampling_params = SamplingParams(max_tokens=args.max_tokens, temperature=0.0)
+    model = LLM(model=args.model_path, tensor_parallel_size=args.num_gpus, trust_remote_code=True, tokenizer=args.model_path)
+    sampling_params = SamplingParams(max_tokens=args.max_tokens, temperature=args.temperature)
     set_seed(42)
     for constraint_type in args.constraint_types:
         data = []
