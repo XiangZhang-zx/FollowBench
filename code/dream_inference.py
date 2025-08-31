@@ -80,24 +80,34 @@ def dream_inference(args):
                     inputs = {k: v.to(accelerator.device) for k, v in inputs.items()}
                     
                     # Generate response with Dream's diffusion process
-                    if hasattr(model, 'generate'):
-                        output = model.generate(
-                            input_ids=inputs['input_ids'],
-                            attention_mask=inputs['attention_mask'],
-                            max_new_tokens=args.max_new_tokens,
-                            diffusion_steps=args.diffusion_steps,
-                            temperature=args.temperature,
-                            do_sample=True,
-                            top_p=0.95,
-                            pad_token_id=tokenizer.eos_token_id
-                        )
-                        
-                        generated_text = tokenizer.decode(
-                            output[0][len(inputs['input_ids'][0]):], 
-                            skip_special_tokens=True
-                        )
+                    # Check both the model and unwrapped model for the method
+                    actual_model = getattr(model, 'module', model)  # Handle DDP wrapping
+
+                    if hasattr(actual_model, 'diffusion_generate'):
+                        with torch.no_grad():
+                            generated_ids = actual_model.diffusion_generate(
+                                inputs=inputs['input_ids'],
+                                attention_mask=inputs['attention_mask'],
+                                diffusion_steps=args.diffusion_steps,
+                                max_new_tokens=args.max_new_tokens,
+                                temperature=args.temperature,
+                                top_p=0.95
+                            )
+
+                        # Extract only the newly generated tokens
+                        new_tokens = generated_ids[0][len(inputs['input_ids'][0]):]
+                        generated_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+                        # Clean up the output
+                        if '<|end_of_text|>' in generated_text:
+                            generated_text = generated_text.split('<|end_of_text|>')[0]
+                        if '<|endoftext|>' in generated_text:
+                            generated_text = generated_text.split('<|endoftext|>')[0]
+                        generated_text = generated_text.strip()
                     else:
-                        generated_text = "Dream generation method not available"
+                        # Debug info
+                        available_methods = [attr for attr in dir(actual_model) if 'generate' in attr.lower()]
+                        generated_text = f"Dream diffusion_generate method not available. Available: {available_methods}"
                     
                     # Format output to match FollowBench API format
                     api_output = {
