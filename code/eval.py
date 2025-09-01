@@ -6,20 +6,21 @@ from gpt4_based_evaluation import save_discriminative_evaluation, save_csl_evalu
 
 def main(args):
 
-    ### rule-based evaluation
-    save_evaluate_example_constraint(
-                                    data_path=args.data_path, 
-                                    api_output_path=args.api_output_path, 
+    ### rule-based evaluation (only if example constraint is requested)
+    if 'example' in args.constraint_types:
+        save_evaluate_example_constraint(
+                                        data_path=args.data_path,
+                                        api_output_path=args.api_output_path,
+                                        model_names=args.model_paths,
+                                        evaluation_result_path=args.evaluation_result_path
+            )
+
+        save_csl_example_constraint(
+                                    data_path=args.data_path,
+                                    api_output_path=args.api_output_path,
                                     model_names=args.model_paths,
                                     evaluation_result_path=args.evaluation_result_path
-        )
-    
-    save_csl_example_constraint(
-                                data_path=args.data_path, 
-                                api_output_path=args.api_output_path,
-                                model_names=args.model_paths,
-                                evaluation_result_path=args.evaluation_result_path
-                                )
+                                    )
 
 
     ### LLM-based evaluation
