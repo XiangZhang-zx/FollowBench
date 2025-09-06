@@ -145,10 +145,12 @@ def dream_inference(args):
                             generated_ids = actual_model.diffusion_generate(
                                 inputs=inputs['input_ids'],
                                 attention_mask=inputs['attention_mask'],
-                                diffusion_steps=args.diffusion_steps,
+                                steps=args.diffusion_steps,  # Use 'steps' instead of 'diffusion_steps'
                                 max_new_tokens=args.max_new_tokens,
                                 temperature=args.temperature,
-                                top_p=0.95
+                                top_p=0.95,
+                                alg=args.alg,  # Add algorithm parameter
+                                alg_temp=args.alg_temp  # Add algorithm temperature
                             )
 
                         # Extract only the newly generated tokens
@@ -212,6 +214,10 @@ if __name__ == "__main__":
                        help="Number of diffusion steps for Dream")
     parser.add_argument("--temperature", type=float, default=0.2,
                        help="Temperature for generation")
+    parser.add_argument("--alg", type=str, default="entropy",
+                       help="Remasking strategy: origin, maskgit_plus, topk_margin, entropy")
+    parser.add_argument("--alg_temp", type=float, default=0.0,
+                       help="Algorithm temperature for confidence-based strategies")
     parser.add_argument("--limit_samples", type=int, default=0,
                        help="限制处理的样本数量，0表示处理全部")
 
