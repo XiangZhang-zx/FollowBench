@@ -13,14 +13,13 @@ def convert_to_api_input(data_path, api_input_path, constraint_type):
     for i in range(len(input_data)):
         if constraint_type != 'example':
             assert i % 6 == input_data[i]['level']
-        if input_data[i]['level'] > 0:
-            assert input_data[i]['instruction'] != ""
+        if input_data[i]['level'] >= 0 and input_data[i]['instruction'] != "":  # 包含 level 0，但跳过空指令
             num += 1
     print(f"\n[{constraint_type}] number of examples: {num}")
 
     with open(os.path.join(api_input_path, "{}_constraint.jsonl".format(constraint_type)), 'w', encoding='utf-8') as output_file:
         for d in input_data:
-            if d['level'] > 0:
+            if d['level'] >= 0 and d['instruction'] != "":  # 包含 level 0，但跳过空指令
                 output_file.write(json.dumps({'prompt_new': d['instruction']})+ "\n")
 
 

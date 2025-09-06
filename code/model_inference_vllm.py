@@ -20,14 +20,11 @@ ASSISTANT_SUFFIX="<|im_end|>\n"
 
 
 def generate_prompts(data, tokenizer=None):
-    if tokenizer is None or tokenizer.chat_template is None:
-        print(f"No tokenizer or chat template found, using manual chat template!")
-        request = """{SYSTEM_PREFIX}{system_message}{SYSTEM_SUFFIX}{USER_PREFIX}{user_message}{USER_SUFFIX}{ASSISTANT_PREFIX}"""
-        prompts = [request.format(SYSTEM_PREFIX=SYSTEM_PREFIX, system_message="", SYSTEM_SUFFIX=SYSTEM_SUFFIX,USER_PREFIX=USER_PREFIX,user_message=f"{example['prompt_new']}", USER_SUFFIX=USER_SUFFIX,ASSISTANT_PREFIX=ASSISTANT_PREFIX) for example in data]
+    # 强制使用简单格式，不使用chat template（适合base model比较）
+    print(f"Using simple format without chat template for base model comparison!")
 
-    else:
-        print(f"Tokenizer with chat template found, using tokenizer.apply_chat_template!")
-        prompts = [tokenizer.apply_chat_template([{"role": "user", "content": f"{example['prompt_new']}"}], tokenize=False, add_generation_prompt=True) for example in data]
+    # 对于base model，使用最简单的格式
+    prompts = [f"{example['prompt_new']}" for example in data]
     return prompts
 
 
@@ -62,6 +59,16 @@ def run_inference(args):
             for line in data_file:
                 data.append(json.loads(line))
 
+        # 限制样本数量
+        if args.limit_samples > 0:
+            data = data[:args.limit_samples]
+            print(f"限制处理样本数量为: {len(data)}")
+
+        # 限制样本数量用于测试
+        if hasattr(args, 'limit_samples') and args.limit_samples > 0:
+            data = data[:args.limit_samples]
+            print(f"限制处理样本数量: {len(data)}")
+
         output_list = generate_responses(model, sampling_params, data, args, devices[0:args.num_gpus])
 
         os.makedirs(f"{args.api_output_path}/{args.model_path}", exist_ok=True)
@@ -78,6 +85,7 @@ def main():
     parser.add_argument("--data_path", type=str, default="data")
     parser.add_argument("--api_input_path", type=str, default="api_input")
     parser.add_argument("--api_output_path", type=str, default="api_output_vllm")
+    parser.add_argument("--limit_samples", type=int, default=0, help="限制处理的样本数量，0表示处理全部")
 
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--repetition_penalty", type=float, default=1.0)

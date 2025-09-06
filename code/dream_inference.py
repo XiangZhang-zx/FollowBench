@@ -8,6 +8,59 @@ from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 from accelerate import Accelerator
 
+def merge_gpu_results(args, constraint_type):
+    """合并多个GPU的结果文件"""
+    import glob
+    import time
+
+    # 等待更长时间确保所有GPU完成写入
+    print("⏳ Waiting for all GPU processes to complete...")
+    time.sleep(5)
+
+    # 查找所有GPU的输出文件
+    pattern = os.path.join(args.api_output_path,
+                          args.model_path.replace('/', '_'),
+                          f"{constraint_type}_constraint_gpu*.jsonl")
+
+    # 多次尝试查找文件，确保所有GPU都完成
+    max_attempts = 10
+    for attempt in range(max_attempts):
+        gpu_files = glob.glob(pattern)
+        if gpu_files:
+            break
+        print(f"🔍 Attempt {attempt + 1}: Looking for GPU result files...")
+        time.sleep(1)
+
+    if not gpu_files:
+        print(f"⚠️ No GPU result files found for {constraint_type}")
+        return
+
+    print(f"📁 Found {len(gpu_files)} GPU result files: {[os.path.basename(f) for f in gpu_files]}")
+
+    # 合并文件
+    merged_file = os.path.join(args.api_output_path,
+                              args.model_path.replace('/', '_'),
+                              f"{constraint_type}_constraint.jsonl")
+
+    all_results = []
+    for gpu_file in sorted(gpu_files):
+        print(f"📖 Reading {os.path.basename(gpu_file)}...")
+        with open(gpu_file, 'r', encoding='utf-8') as f:
+            file_results = []
+            for line in f:
+                if line.strip():
+                    file_results.append(json.loads(line))
+            all_results.extend(file_results)
+            print(f"   Found {len(file_results)} results")
+
+    # 写入合并后的文件
+    with open(merged_file, 'w', encoding='utf-8') as f:
+        for result in all_results:
+            f.write(json.dumps(result, ensure_ascii=False) + '\n')
+
+    print(f"🔗 Merged {len(all_results)} results from {len(gpu_files)} GPU files")
+    print(f"📁 Merged file: {merged_file}")
+
 @torch.inference_mode()
 def dream_inference(args):
     """Custom inference for Dream diffusion model"""
@@ -44,7 +97,12 @@ def dream_inference(args):
         with open(input_file, 'r', encoding='utf-8') as f:
             for line in f:
                 data.append(json.loads(line))
-        
+
+        # 限制样本数量
+        if args.limit_samples > 0:
+            data = data[:args.limit_samples]
+            print(f"限制处理样本数量为: {len(data)}")
+
         print(f"Processing {len(data)} samples...")
 
         # Shard data across GPUs for parallel processing
@@ -72,11 +130,10 @@ def dream_inference(args):
                 try:
                     instruction = item['prompt_new']
                     
-                    # Format input for Dream
-                    messages = [{'role': 'user', 'content': instruction}]
-                    inputs = tokenizer.apply_chat_template(
-                        messages, return_tensors='pt', return_dict=True, add_generation_prompt=True
-                    )
+                    # Format input for Dream Base Model - 使用简单格式
+                    print(f"🔄 Dream Base Model: 使用简单格式（不使用chat template）")
+                    # 直接使用原始instruction，不添加对话标记
+                    inputs = tokenizer(instruction, return_tensors='pt')
                     inputs = {k: v.to(accelerator.device) for k, v in inputs.items()}
                     
                     # Generate response with Dream's diffusion process
@@ -131,6 +188,13 @@ def dream_inference(args):
         print(f"✅ {constraint_type}: {len(data)} samples completed")
         print(f"Output saved to: {output_file}")
 
+        # 等待所有进程完成
+        accelerator.wait_for_everyone()
+
+        # 合并所有GPU的结果 (只在主进程中执行)
+        if accelerator.is_main_process:
+            merge_gpu_results(args, constraint_type)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Dream model inference for FollowBench')
     
@@ -146,9 +210,11 @@ if __name__ == "__main__":
                        help="Maximum new tokens to generate")
     parser.add_argument("--diffusion_steps", type=int, default=256, 
                        help="Number of diffusion steps for Dream")
-    parser.add_argument("--temperature", type=float, default=0.2, 
+    parser.add_argument("--temperature", type=float, default=0.2,
                        help="Temperature for generation")
-    
+    parser.add_argument("--limit_samples", type=int, default=0,
+                       help="限制处理的样本数量，0表示处理全部")
+
     args = parser.parse_args()
     
     dream_inference(args)
