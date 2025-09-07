@@ -45,7 +45,7 @@ def get_num_transfer_tokens(mask_index, steps):
     return num_transfer_tokens.to(torch.int64)
 
 @torch.no_grad()
-def generate(model, prompt, steps=64, gen_length=128, block_length=32, temperature=0.,
+def generate(model, prompt, steps=64, gen_length=128, block_length=128, temperature=0.,
              cfg_scale=0., remasking='low_confidence', mask_id=126336):
     '''
     Optimized version of the generate function.
@@ -320,11 +320,11 @@ if __name__ == "__main__":
                        help="Path to API input files")
     parser.add_argument("--api_output_path", type=str, default="api_output_vllm",
                        help="Path to save API output files")
-    parser.add_argument("--max_new_tokens", type=int, default=2048,
+    parser.add_argument("--max_new_tokens", type=int, default=1024,
                        help="Maximum new tokens to generate")
-    parser.add_argument("--diffusion_steps", type=int, default=2048,
+    parser.add_argument("--diffusion_steps", type=int, default=1024,
                        help="Number of diffusion steps for LLaDA")
-    parser.add_argument("--block_length", type=int, default=2048,
+    parser.add_argument("--block_length", type=int, default=1024,
                        help="Block length for LLaDA generation")
     parser.add_argument("--temperature", type=float, default=0.2,
                        help="Temperature for generation")
