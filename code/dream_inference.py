@@ -119,8 +119,8 @@ def dream_inference(args):
         data_shard = data[start_idx:end_idx]
         print(f"GPU {accelerator.process_index}: Processing samples {start_idx}-{end_idx-1} ({len(data_shard)} samples)")
 
-        # Create output directory
-        output_dir = os.path.join(args.api_output_path, args.model_path.replace('/', '_'))
+        # Create output directory (use slash separator like AR models)
+        output_dir = os.path.join(args.api_output_path, args.model_path)
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, f"{constraint_type}_constraint_gpu{accelerator.process_index}.jsonl")
         
@@ -170,7 +170,7 @@ def dream_inference(args):
                     
                     # Format output to match FollowBench API format
                     api_output = {
-                        "prompt_new": instruction,
+                        "prompt": instruction,  # 统一使用 "prompt" 字段名
                         "choices": [{"message": {"content": generated_text}}],
                         "generation": generated_text  # Add generation field for compatibility
                     }
@@ -181,7 +181,7 @@ def dream_inference(args):
                     print(f"Error processing item {i}: {e}")
                     # Write error output
                     error_output = {
-                        "prompt_new": item.get('prompt_new', ''),
+                        "prompt": item.get('prompt_new', ''),  # 统一使用 "prompt" 字段名
                         "choices": [{"message": {"content": f"Error: {str(e)}"}}]
                     }
                     out_f.write(json.dumps(error_output) + '\n')
@@ -206,11 +206,11 @@ if __name__ == "__main__":
                        help="Constraint types to evaluate")
     parser.add_argument("--api_input_path", type=str, default="api_input", 
                        help="Path to API input files")
-    parser.add_argument("--api_output_path", type=str, default="api_output", 
+    parser.add_argument("--api_output_path", type=str, default="api_output_vllm",
                        help="Path to save API output files")
-    parser.add_argument("--max_new_tokens", type=int, default=256, 
+    parser.add_argument("--max_new_tokens", type=int, default=2048,
                        help="Maximum new tokens to generate")
-    parser.add_argument("--diffusion_steps", type=int, default=256, 
+    parser.add_argument("--diffusion_steps", type=int, default=2048,
                        help="Number of diffusion steps for Dream")
     parser.add_argument("--temperature", type=float, default=0.2,
                        help="Temperature for generation")

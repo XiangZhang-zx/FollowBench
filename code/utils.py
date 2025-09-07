@@ -35,12 +35,15 @@ def data_match_api_output(data_path, api_output_path, constraint_type, model_nam
 
     # match
     for i in range(len(data)):
+        data[i]['generation'] = ""  # Initialize with empty generation
         for j in range(len(output)):
-            if data[i]['instruction'] == output[j]['prompt']:
+            # Handle both 'prompt' and 'prompt_new' fields for different model types
+            prompt_field = output[j].get('prompt', output[j].get('prompt_new', ''))
+            if data[i]['instruction'] == prompt_field:
                 data[i]['generation'] = output[j]['choices'][0]['message']['content']
                 break
-            if j == len(output)-1 and data[i]['level'] != 0 and data[i]['instruction'] != output[j]['prompt']:
-                print(i)
+            if j == len(output)-1 and data[i]['level'] != 0 and data[i]['instruction'] != prompt_field:
+                print(f"No match found for data item {i}: {data[i]['instruction'][:50]}...")
 
     return data
 

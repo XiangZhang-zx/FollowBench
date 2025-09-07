@@ -224,7 +224,7 @@ def llada_inference(args):
     gen_params = {
         'steps': args.diffusion_steps,
         'gen_length': args.max_new_tokens,
-        'block_length': 32,
+        'block_length': args.block_length,
         'temperature': args.temperature,
         'cfg_scale': 0.,
         'remasking': 'low_confidence',
@@ -271,8 +271,8 @@ def llada_inference(args):
         data_shard = data[start_idx:end_idx]
         print(f"GPU {accelerator.process_index}: Processing samples {start_idx}-{end_idx-1} ({len(data_shard)} samples)")
 
-        # Create output directory
-        output_dir = os.path.join(args.api_output_path, args.model_path.replace('/', '_'))
+        # Create output directory (use slash separator like AR models)
+        output_dir = os.path.join(args.api_output_path, args.model_path)
         os.makedirs(output_dir, exist_ok=True)
         output_file = os.path.join(output_dir, f"{constraint_type}_constraint_gpu{accelerator.process_index}.jsonl")
 
@@ -285,9 +285,12 @@ def llada_inference(args):
         # Save outputs in FollowBench format (compatible with llm_eval.py)
         with open(output_file, 'w', encoding='utf-8') as out_f:
             for item, response in zip(data_shard, responses):
+                # Clean up response - remove any artifacts or repetitions
+                cleaned_response = response.strip()
+
                 api_output = {
                     "prompt": item['prompt_new'],  # Use "prompt" key for compatibility
-                    "choices": [{"message": {"content": response}}]
+                    "choices": [{"message": {"content": cleaned_response}}]
                 }
                 out_f.write(json.dumps(api_output, ensure_ascii=False) + '\n')
         
@@ -315,13 +318,15 @@ if __name__ == "__main__":
                        help="Constraint types to evaluate")
     parser.add_argument("--api_input_path", type=str, default="api_input", 
                        help="Path to API input files")
-    parser.add_argument("--api_output_path", type=str, default="api_output", 
+    parser.add_argument("--api_output_path", type=str, default="api_output_vllm",
                        help="Path to save API output files")
-    parser.add_argument("--max_new_tokens", type=int, default=256, 
+    parser.add_argument("--max_new_tokens", type=int, default=2048,
                        help="Maximum new tokens to generate")
-    parser.add_argument("--diffusion_steps", type=int, default=64, 
+    parser.add_argument("--diffusion_steps", type=int, default=2048,
                        help="Number of diffusion steps for LLaDA")
-    parser.add_argument("--temperature", type=float, default=0.7,
+    parser.add_argument("--block_length", type=int, default=2048,
+                       help="Block length for LLaDA generation")
+    parser.add_argument("--temperature", type=float, default=0.2,
                        help="Temperature for generation")
     parser.add_argument("--limit_samples", type=int, default=0,
                        help="限制处理的样本数量，0表示处理全部")

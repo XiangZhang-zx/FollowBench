@@ -1,0 +1,11 @@
+[
+  {
+    "example_id": 13,
+    "category": "example",
+    "source": "freebase_qa",
+    "level": 2,
+    "instruction": "The topic of this question is: Malta.\n\nThe answer to this question should be in the following category: Contains\n\nUsing this, answer the following question:\n\nWhich town in Malta contains the replica of a World War II bomb in the roof of its local dome ?\nBot: Mosta\n\nWhat category best describes the answer to the following question?\n\nQuestion: Which is the most famous building on the Ile de la Cite in Paris?\n#Bot#\nTourist attractions\n\nWhat category best describes the answer to the following question?\n\nQuestion: Which battle, the first major engagement of the Crimean War took place on 20th September 1854?\n#Bot#\nIncludes event\n\nWhat category best describes the answer to the following question?\n\nQuestion: Copacabana Beach is close to which city?\n#Bot#\nAdministrative parent\n\nWhat category best describes the answer to the following question?\n\nQuestion: Who had hit records with Long Tall Sally and Good Golly Miss Molly?\n#Bot#\nArtist\n\nWhat category best describes the answer to the following question?\n\nQuestion: Which ballet personality once appeared on The Muppet Show?",
+    "target": "{instruction}\n#Bot#\n{answer}",
+    "answer": "#Bot#\nEpisodes"
+  }
+]
