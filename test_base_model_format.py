@@ -6,7 +6,7 @@
 
 import sys
 import os
-sys.path.append('/home/xz2649/projects/FollowBench/code')
+sys.path.append('/u/xzhang45/zx//FollowBench/code')
 
 from model_inference_vllm import generate_prompts
 from transformers import AutoTokenizer
