@@ -222,5 +222,13 @@ if __name__ == "__main__":
                        help="限制处理的样本数量，0表示处理全部")
 
     args = parser.parse_args()
-    
+
+    # Print parameters for debugging
+    print(f"🔧 Dream Inference Parameters:")
+    print(f"  - Model path: {args.model_path}")
+    print(f"  - Diffusion steps: {args.diffusion_steps}")
+    print(f"  - Max new tokens: {args.max_new_tokens}")
+    print(f"  - Temperature: {args.temperature}")
+    print(f"  - Constraint types: {args.constraint_types}")
+
     dream_inference(args)
