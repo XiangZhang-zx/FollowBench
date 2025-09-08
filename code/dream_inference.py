@@ -8,6 +8,19 @@ from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 from accelerate import Accelerator
 
+# Import dLLM-Cache components
+try:
+    import sys
+    sys.path.append('/home/xz2649/projects/dLLM-cache')
+    from dllm_cache.cache import dLLMCache, dLLMCacheConfig
+    from dllm_cache.hooks import register_cache_Dream
+    from dataclasses import asdict
+    CACHE_AVAILABLE = True
+    print("✅ dLLM-Cache imported successfully")
+except ImportError as e:
+    print(f"⚠️ dLLM-Cache not available: {e}")
+    CACHE_AVAILABLE = False
+
 def merge_gpu_results(args, constraint_type):
     """合并多个GPU的结果文件"""
     import glob
@@ -78,11 +91,35 @@ def dream_inference(args):
         low_cpu_mem_usage=True
     )
     
+    # Initialize dLLM-Cache if available and enabled
+    if CACHE_AVAILABLE and args.use_cache:
+        print("🚀 Initializing dLLM-Cache for Dream model...")
+
+        dLLMCache.new_instance(
+            **asdict(
+                dLLMCacheConfig(
+                    prompt_interval_steps=args.prompt_interval_steps,
+                    gen_interval_steps=args.gen_interval_steps,
+                    transfer_ratio=args.transfer_ratio,
+                )
+            )
+        )
+        register_cache_Dream(model, "model.layers")
+        print(f"✅ dLLM-Cache enabled: prompt_interval={args.prompt_interval_steps}, gen_interval={args.gen_interval_steps}, transfer_ratio={args.transfer_ratio}")
+    else:
+        if not CACHE_AVAILABLE:
+            print("⚠️ dLLM-Cache not available, running without cache")
+        else:
+            print("⚠️ dLLM-Cache disabled by --use_cache=False")
+
     # Prepare model with accelerate
     model = accelerator.prepare(model)
-    
+
     print(f"✅ Dream model loaded on {accelerator.device}")
-    
+
+    # 等待所有GPU完成模型加载
+    accelerator.wait_for_everyone()
+
     # Process each constraint type
     for constraint_type in args.constraint_types:
         print(f"\n🔍 Processing {constraint_type} constraints...")
@@ -135,7 +172,12 @@ def dream_inference(args):
                     # 直接使用原始instruction，不添加对话标记
                     inputs = tokenizer(instruction, return_tensors='pt')
                     inputs = {k: v.to(accelerator.device) for k, v in inputs.items()}
-                    
+
+                    # Reset cache for each sample if cache is available and enabled
+                    if CACHE_AVAILABLE and args.use_cache:
+                        feature_cache = dLLMCache()
+                        feature_cache.reset_cache(inputs['input_ids'].shape[1])
+
                     # Generate response with Dream's diffusion process
                     # Check both the model and unwrapped model for the method
                     actual_model = getattr(model, 'module', model)  # Handle DDP wrapping
@@ -220,6 +262,16 @@ if __name__ == "__main__":
                        help="Algorithm temperature for confidence-based strategies")
     parser.add_argument("--limit_samples", type=int, default=0,
                        help="限制处理的样本数量，0表示处理全部")
+
+    # Cache parameters
+    parser.add_argument("--use_cache", action="store_true", default=True,
+                       help="Enable dLLM-Cache for acceleration")
+    parser.add_argument("--prompt_interval_steps", type=int, default=100,
+                       help="Cache prompt features every N steps")
+    parser.add_argument("--gen_interval_steps", type=int, default=7,
+                       help="Cache generation features every N steps")
+    parser.add_argument("--transfer_ratio", type=float, default=0.25,
+                       help="Transfer ratio for cached features")
 
     args = parser.parse_args()
 

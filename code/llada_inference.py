@@ -10,6 +10,19 @@ import numpy as np
 import torch.nn.functional as F
 from accelerate import Accelerator
 
+# Import dLLM-Cache components
+try:
+    import sys
+    sys.path.append('/home/xz2649/projects/dLLM-cache')
+    from dllm_cache.cache import dLLMCache, dLLMCacheConfig
+    from dllm_cache.hooks import register_cache_LLaDA
+    from dataclasses import asdict
+    CACHE_AVAILABLE = True
+    print("✅ dLLM-Cache imported successfully for LLaDA")
+except ImportError as e:
+    print(f"⚠️ dLLM-Cache not available for LLaDA: {e}")
+    CACHE_AVAILABLE = False
+
 def add_gumbel_noise(logits, temperature):
     '''
     The Gumbel max is a method for sampling categorical distributions.
@@ -117,9 +130,10 @@ def generate(model, prompt, steps=64, gen_length=128, block_length=128, temperat
         return x
 
 class Generator():
-    def __init__(self, model, tokenizer, **kwargs):
+    def __init__(self, model, tokenizer, use_cache=True, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
+        self.use_cache = use_cache
         self.kwargs = kwargs
     
     def generate(self, inputs):
@@ -128,12 +142,18 @@ class Generator():
         for i in trange(0, len(inputs), batch_size):
             batch = inputs[i:i + batch_size]
             model_inputs = self.tokenizer(
-                batch, 
-                padding=True, 
+                batch,
+                padding=True,
                 padding_side="left",
-                truncation=False, 
+                truncation=False,
                 return_tensors="pt"
             ).to(self.model.device)
+
+            # Reset cache for each batch if cache is available and enabled
+            if CACHE_AVAILABLE and self.use_cache:
+                feature_cache = dLLMCache()
+                feature_cache.reset_cache(model_inputs.input_ids.shape[1])
+
             generated_ids = generate(self.model, model_inputs.input_ids, **self.kwargs)
             generated_ids = [
                 output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
@@ -216,10 +236,31 @@ def llada_inference(args):
     )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-    
+
+    # Initialize dLLM-Cache if available and enabled
+    if CACHE_AVAILABLE and args.use_cache:
+        print("🚀 Initializing dLLM-Cache for LLaDA model...")
+
+        dLLMCache.new_instance(
+            **asdict(
+                dLLMCacheConfig(
+                    prompt_interval_steps=args.prompt_interval_steps,
+                    gen_interval_steps=args.gen_interval_steps,
+                    transfer_ratio=args.transfer_ratio,
+                )
+            )
+        )
+        register_cache_LLaDA(model, "model.transformer.blocks")
+        print(f"✅ dLLM-Cache enabled for LLaDA: prompt_interval={args.prompt_interval_steps}, gen_interval={args.gen_interval_steps}, transfer_ratio={args.transfer_ratio}")
+    else:
+        if not CACHE_AVAILABLE:
+            print("⚠️ dLLM-Cache not available for LLaDA, running without cache")
+        else:
+            print("⚠️ dLLM-Cache disabled by --use_cache=False")
+
     # Prepare model with accelerate
     model = accelerator.prepare(model)
-    
+
     # Create generator with LLaDA-specific parameters
     gen_params = {
         'steps': args.diffusion_steps,
@@ -231,10 +272,13 @@ def llada_inference(args):
         'mask_id': 126336  # LLaDA mask token ID
     }
     
-    generator = Generator(model, tokenizer, **gen_params)
+    generator = Generator(model, tokenizer, use_cache=(CACHE_AVAILABLE and args.use_cache), **gen_params)
     
     print(f"✅ LLaDA model loaded with parameters: {gen_params}")
-    
+
+    # 等待所有GPU完成模型加载
+    accelerator.wait_for_everyone()
+
     # Process each constraint type
     for constraint_type in args.constraint_types:
         print(f"\n🔍 Processing {constraint_type} constraints...")
@@ -330,6 +374,16 @@ if __name__ == "__main__":
                        help="Temperature for generation")
     parser.add_argument("--limit_samples", type=int, default=0,
                        help="限制处理的样本数量，0表示处理全部")
+
+    # Cache parameters
+    parser.add_argument("--use_cache", action="store_true", default=True,
+                       help="Enable dLLM-Cache for acceleration")
+    parser.add_argument("--prompt_interval_steps", type=int, default=100,
+                       help="Cache prompt features every N steps")
+    parser.add_argument("--gen_interval_steps", type=int, default=7,
+                       help="Cache generation features every N steps")
+    parser.add_argument("--transfer_ratio", type=float, default=0.25,
+                       help="Transfer ratio for cached features")
 
     args = parser.parse_args()
     
