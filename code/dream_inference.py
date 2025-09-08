@@ -4,9 +4,11 @@ import argparse
 import os
 import json
 import torch
+from datetime import timedelta
 from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
 
 # Import Fast-dLLM cache components and modified model
 try:
@@ -80,7 +82,9 @@ def merge_gpu_results(args, constraint_type):
 def dream_inference(args):
     """Custom inference for Dream diffusion model"""
     
-    accelerator = Accelerator()
+    # 设置分布式进程组超时时间为2小时，避免NCCL超时
+    ipg = InitProcessGroupKwargs(timeout=timedelta(seconds=7200))
+    accelerator = Accelerator(kwargs_handlers=[ipg])
     
     print(f"🌟 Loading Dream model: {args.model_path}")
     
@@ -119,8 +123,13 @@ def dream_inference(args):
         else:
             print("⚠️ Fast-dLLM cache disabled by --use_cache=False")
 
-    # Prepare model with accelerate
-    model = accelerator.prepare(model)
+    # 手动移动模型到设备，避免accelerate.prepare()干扰Fast-dLLM缓存
+    if USE_FAST_DLLM_MODEL and FAST_DLLM_AVAILABLE:
+        print("🚀 Using manual device placement for Fast-dLLM compatibility")
+        model = model.to(accelerator.device)
+    else:
+        print("⚠️ Using accelerate.prepare() for fallback model")
+        model = accelerator.prepare(model)
 
     print(f"✅ Dream model loaded on {accelerator.device}")
 

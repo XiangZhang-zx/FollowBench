@@ -4,11 +4,13 @@ import argparse
 import os
 import json
 import torch
+from datetime import timedelta
 from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm, trange
 import numpy as np
 import torch.nn.functional as F
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
 
 # Import Fast-dLLM cache components and modified model
 try:
@@ -139,13 +141,14 @@ def generate(model, prompt, steps=64, gen_length=128, block_length=128, temperat
         return x
 
 class Generator():
-    def __init__(self, model, tokenizer, use_cache=True, dual_cache=False, threshold=None, factor=None, **kwargs):
+    def __init__(self, model, tokenizer, use_cache=True, dual_cache=False, threshold=None, factor=None, accelerator=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
         self.use_cache = use_cache
         self.dual_cache = dual_cache
         self.threshold = threshold
         self.factor = factor
+        self.accelerator = accelerator
         self.kwargs = kwargs
     
     def generate(self, inputs):
@@ -206,6 +209,10 @@ class Generator():
             else:
                 # Fallback to regular generate
                 generated_ids = generate(self.model, model_inputs.input_ids, **self.kwargs)
+
+            # 在生成后同步所有进程，避免NCCL超时
+            if hasattr(self, 'accelerator') and self.accelerator is not None:
+                self.accelerator.wait_for_everyone()
             generated_ids = [
                 output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
             ]
@@ -270,7 +277,9 @@ def merge_gpu_results(args, constraint_type):
 def llada_inference(args):
     """LLaDA diffusion inference for FollowBench"""
 
-    accelerator = Accelerator()
+    # 设置分布式进程组超时时间为2小时，避免NCCL超时
+    ipg = InitProcessGroupKwargs(timeout=timedelta(seconds=7200))
+    accelerator = Accelerator(kwargs_handlers=[ipg])
 
     # Clear GPU cache before loading model
     if torch.cuda.is_available():
@@ -310,8 +319,13 @@ def llada_inference(args):
         else:
             print("⚠️ Fast-dLLM cache disabled by --use_cache=False")
 
-    # Prepare model with accelerate
-    model = accelerator.prepare(model)
+    # 手动移动模型到设备，避免accelerate.prepare()干扰Fast-dLLM缓存
+    if USE_FAST_DLLM_MODEL and FAST_DLLM_AVAILABLE:
+        print("🚀 Using manual device placement for Fast-dLLM compatibility")
+        model = model.to(accelerator.device)
+    else:
+        print("⚠️ Using accelerate.prepare() for fallback model")
+        model = accelerator.prepare(model)
 
     # Create generator with LLaDA-specific parameters
     gen_params = {
@@ -324,7 +338,7 @@ def llada_inference(args):
         'mask_id': 126336  # LLaDA mask token ID
     }
     
-    generator = Generator(model, tokenizer, use_cache=(FAST_DLLM_AVAILABLE and args.use_cache), dual_cache=args.dual_cache, threshold=args.threshold, factor=args.factor, **gen_params)
+    generator = Generator(model, tokenizer, use_cache=(FAST_DLLM_AVAILABLE and args.use_cache), dual_cache=args.dual_cache, threshold=args.threshold, factor=args.factor, accelerator=accelerator, **gen_params)
     
     print(f"✅ LLaDA model loaded with parameters: {gen_params}")
 
