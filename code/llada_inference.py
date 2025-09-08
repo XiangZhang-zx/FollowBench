@@ -10,18 +10,27 @@ import numpy as np
 import torch.nn.functional as F
 from accelerate import Accelerator
 
-# Import dLLM-Cache components
+# Import Fast-dLLM cache components and modified model
 try:
     import sys
-    sys.path.append('/home/xz2649/projects/dLLM-cache')
-    from dllm_cache.cache import dLLMCache, dLLMCacheConfig
-    from dllm_cache.hooks import register_cache_LLaDA
-    from dataclasses import asdict
-    CACHE_AVAILABLE = True
-    print("✅ dLLM-Cache imported successfully for LLaDA")
+    sys.path.append('/home/xz2649/projects/Fast-dLLM/llada')
+    from generate import generate, generate_with_prefix_cache, generate_with_dual_cache
+    from model.modeling_llada import LLaDAModelLM  # Use Fast-dLLM's modified LLaDA model
+    FAST_DLLM_AVAILABLE = True
+    USE_FAST_DLLM_MODEL = True
+    print("✅ Fast-dLLM LLaDA cache and model imported successfully")
 except ImportError as e:
-    print(f"⚠️ dLLM-Cache not available for LLaDA: {e}")
-    CACHE_AVAILABLE = False
+    print(f"⚠️ Fast-dLLM LLaDA cache not available: {e}")
+    FAST_DLLM_AVAILABLE = False
+    USE_FAST_DLLM_MODEL = False
+
+    # Fallback to original generate function
+    try:
+        sys.path.append('/home/xz2649/projects/dLLM-cache')
+        from utils import generate
+        print("✅ Fallback to dLLM-cache generate function")
+    except ImportError:
+        print("❌ No generate function available")
 
 def add_gumbel_noise(logits, temperature):
     '''
@@ -130,10 +139,13 @@ def generate(model, prompt, steps=64, gen_length=128, block_length=128, temperat
         return x
 
 class Generator():
-    def __init__(self, model, tokenizer, use_cache=True, **kwargs):
+    def __init__(self, model, tokenizer, use_cache=True, dual_cache=False, threshold=None, factor=None, **kwargs):
         self.model = model
         self.tokenizer = tokenizer
         self.use_cache = use_cache
+        self.dual_cache = dual_cache
+        self.threshold = threshold
+        self.factor = factor
         self.kwargs = kwargs
     
     def generate(self, inputs):
@@ -149,12 +161,51 @@ class Generator():
                 return_tensors="pt"
             ).to(self.model.device)
 
-            # Reset cache for each batch if cache is available and enabled
-            if CACHE_AVAILABLE and self.use_cache:
-                feature_cache = dLLMCache()
-                feature_cache.reset_cache(model_inputs.input_ids.shape[1])
-
-            generated_ids = generate(self.model, model_inputs.input_ids, **self.kwargs)
+            # Use Fast-dLLM cache functions if available
+            if FAST_DLLM_AVAILABLE and self.use_cache:
+                if self.dual_cache:
+                    try:
+                        generated_ids, nfe = generate_with_dual_cache(
+                            self.model,
+                            model_inputs.input_ids,
+                            threshold=self.threshold,
+                            factor=self.factor,
+                            **self.kwargs
+                        )
+                    except TypeError as e:
+                        # Fallback: filter out unsupported parameters
+                        print(f"⚠️ Dual cache failed with full kwargs, trying without cfg_scale: {e}")
+                        cache_kwargs = {k: v for k, v in self.kwargs.items() if k != 'cfg_scale'}
+                        generated_ids, nfe = generate_with_dual_cache(
+                            self.model,
+                            model_inputs.input_ids,
+                            threshold=self.threshold,
+                            factor=self.factor,
+                            **cache_kwargs
+                        )
+                else:
+                    try:
+                        generated_ids, nfe = generate_with_prefix_cache(
+                            self.model,
+                            model_inputs.input_ids,
+                            threshold=self.threshold,
+                            factor=self.factor,
+                            **self.kwargs
+                        )
+                    except TypeError as e:
+                        # Fallback: filter out unsupported parameters
+                        print(f"⚠️ Prefix cache failed with full kwargs, trying without cfg_scale: {e}")
+                        cache_kwargs = {k: v for k, v in self.kwargs.items() if k != 'cfg_scale'}
+                        generated_ids, nfe = generate_with_prefix_cache(
+                            self.model,
+                            model_inputs.input_ids,
+                            threshold=self.threshold,
+                            factor=self.factor,
+                            **cache_kwargs
+                        )
+            else:
+                # Fallback to regular generate
+                generated_ids = generate(self.model, model_inputs.input_ids, **self.kwargs)
             generated_ids = [
                 output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
             ]
@@ -228,35 +279,36 @@ def llada_inference(args):
 
     print(f"🚀 Loading LLaDA model: {args.model_path}")
 
-    # Load LLaDA model (following official eval_llada.py pattern)
-    model = AutoModel.from_pretrained(
-        args.model_path,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True
-    )
+    # Load LLaDA model - use Fast-dLLM's modified version if available
+    if USE_FAST_DLLM_MODEL:
+        print("🚀 Using Fast-dLLM's modified LLaDA model with KV cache support")
+        model = LLaDAModelLM.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True
+        )
+    else:
+        print("⚠️ Using original LLaDA model (KV cache may not work)")
+        model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True
+        )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
 
-    # Initialize dLLM-Cache if available and enabled
-    if CACHE_AVAILABLE and args.use_cache:
-        print("🚀 Initializing dLLM-Cache for LLaDA model...")
-
-        dLLMCache.new_instance(
-            **asdict(
-                dLLMCacheConfig(
-                    prompt_interval_steps=args.prompt_interval_steps,
-                    gen_interval_steps=args.gen_interval_steps,
-                    transfer_ratio=args.transfer_ratio,
-                )
-            )
-        )
-        register_cache_LLaDA(model, "model.transformer.blocks")
-        print(f"✅ dLLM-Cache enabled for LLaDA: prompt_interval={args.prompt_interval_steps}, gen_interval={args.gen_interval_steps}, transfer_ratio={args.transfer_ratio}")
-    else:
-        if not CACHE_AVAILABLE:
-            print("⚠️ dLLM-Cache not available for LLaDA, running without cache")
+    # Fast-dLLM cache is automatically managed in the generate functions
+    if FAST_DLLM_AVAILABLE and args.use_cache:
+        print("🚀 Fast-dLLM cache enabled for LLaDA model")
+        if args.dual_cache:
+            print("   Using dual cache mode")
         else:
-            print("⚠️ dLLM-Cache disabled by --use_cache=False")
+            print("   Using prefix cache mode")
+    else:
+        if not FAST_DLLM_AVAILABLE:
+            print("⚠️ Fast-dLLM cache not available for LLaDA, using fallback")
+        else:
+            print("⚠️ Fast-dLLM cache disabled by --use_cache=False")
 
     # Prepare model with accelerate
     model = accelerator.prepare(model)
@@ -267,12 +319,12 @@ def llada_inference(args):
         'gen_length': args.max_new_tokens,
         'block_length': args.block_length,
         'temperature': args.temperature,
-        'cfg_scale': 0.,
+        'cfg_scale': args.cfg_scale,
         'remasking': 'low_confidence',
         'mask_id': 126336  # LLaDA mask token ID
     }
     
-    generator = Generator(model, tokenizer, use_cache=(CACHE_AVAILABLE and args.use_cache), **gen_params)
+    generator = Generator(model, tokenizer, use_cache=(FAST_DLLM_AVAILABLE and args.use_cache), dual_cache=args.dual_cache, threshold=args.threshold, factor=args.factor, **gen_params)
     
     print(f"✅ LLaDA model loaded with parameters: {gen_params}")
 
@@ -375,15 +427,17 @@ if __name__ == "__main__":
     parser.add_argument("--limit_samples", type=int, default=0,
                        help="限制处理的样本数量，0表示处理全部")
 
-    # Cache parameters
+    # Fast-dLLM Cache parameters
     parser.add_argument("--use_cache", action="store_true", default=True,
-                       help="Enable dLLM-Cache for acceleration")
-    parser.add_argument("--prompt_interval_steps", type=int, default=100,
-                       help="Cache prompt features every N steps")
-    parser.add_argument("--gen_interval_steps", type=int, default=7,
-                       help="Cache generation features every N steps")
-    parser.add_argument("--transfer_ratio", type=float, default=0.25,
-                       help="Transfer ratio for cached features")
+                       help="Enable Fast-dLLM cache for acceleration")
+    parser.add_argument("--dual_cache", action="store_true", default=False,
+                       help="Enable dual cache mode for Fast-dLLM")
+    parser.add_argument("--threshold", type=float, default=None,
+                       help="Threshold for cache optimization")
+    parser.add_argument("--factor", type=float, default=None,
+                       help="Factor for cache optimization")
+    parser.add_argument("--cfg_scale", type=float, default=0.0,
+                       help="Classifier-free guidance scale")
 
     args = parser.parse_args()
     

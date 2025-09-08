@@ -8,18 +8,20 @@ from transformers import AutoModel, AutoTokenizer
 from tqdm import tqdm
 from accelerate import Accelerator
 
-# Import dLLM-Cache components
+# Import Fast-dLLM cache components and modified model
 try:
     import sys
-    sys.path.append('/home/xz2649/projects/dLLM-cache')
-    from dllm_cache.cache import dLLMCache, dLLMCacheConfig
-    from dllm_cache.hooks import register_cache_Dream
-    from dataclasses import asdict
-    CACHE_AVAILABLE = True
-    print("✅ dLLM-Cache imported successfully")
+    import types
+    sys.path.append('/home/xz2649/projects/Fast-dLLM/dream')
+    from model.generation_utils_block import DreamGenerationMixin
+    from model.modeling_dream import DreamModel  # Use Fast-dLLM's modified Dream model
+    FAST_DLLM_AVAILABLE = True
+    USE_FAST_DLLM_MODEL = True
+    print("✅ Fast-dLLM Dream cache and model imported successfully")
 except ImportError as e:
-    print(f"⚠️ dLLM-Cache not available: {e}")
-    CACHE_AVAILABLE = False
+    print(f"⚠️ Fast-dLLM Dream cache not available: {e}")
+    FAST_DLLM_AVAILABLE = False
+    USE_FAST_DLLM_MODEL = False
 
 def merge_gpu_results(args, constraint_type):
     """合并多个GPU的结果文件"""
@@ -82,35 +84,40 @@ def dream_inference(args):
     
     print(f"🌟 Loading Dream model: {args.model_path}")
     
-    # Load Dream model
+    # Load Dream model - use Fast-dLLM's modified version if available
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
-    model = AutoModel.from_pretrained(
-        args.model_path, 
-        torch_dtype=torch.bfloat16, 
-        trust_remote_code=True,
-        low_cpu_mem_usage=True
-    )
-    
-    # Initialize dLLM-Cache if available and enabled
-    if CACHE_AVAILABLE and args.use_cache:
-        print("🚀 Initializing dLLM-Cache for Dream model...")
 
-        dLLMCache.new_instance(
-            **asdict(
-                dLLMCacheConfig(
-                    prompt_interval_steps=args.prompt_interval_steps,
-                    gen_interval_steps=args.gen_interval_steps,
-                    transfer_ratio=args.transfer_ratio,
-                )
-            )
+    if USE_FAST_DLLM_MODEL:
+        print("🚀 Using Fast-dLLM's modified Dream model with KV cache support")
+        model = DreamModel.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
         )
-        register_cache_Dream(model, "model.layers")
-        print(f"✅ dLLM-Cache enabled: prompt_interval={args.prompt_interval_steps}, gen_interval={args.gen_interval_steps}, transfer_ratio={args.transfer_ratio}")
     else:
-        if not CACHE_AVAILABLE:
-            print("⚠️ dLLM-Cache not available, running without cache")
+        print("⚠️ Using original Dream model")
+        model = AutoModel.from_pretrained(
+            args.model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            low_cpu_mem_usage=True
+        )
+    
+    # Initialize Fast-dLLM cache if available and enabled
+    if FAST_DLLM_AVAILABLE and args.use_cache:
+        print("🚀 Initializing Fast-dLLM cache for Dream model...")
+
+        # Replace generation methods with cached versions
+        model.diffusion_generate = types.MethodType(DreamGenerationMixin.diffusion_generate, model)
+        model._sample = types.MethodType(DreamGenerationMixin._sample, model)
+
+        print(f"✅ Fast-dLLM cache enabled for Dream model")
+    else:
+        if not FAST_DLLM_AVAILABLE:
+            print("⚠️ Fast-dLLM cache not available, running without cache")
         else:
-            print("⚠️ dLLM-Cache disabled by --use_cache=False")
+            print("⚠️ Fast-dLLM cache disabled by --use_cache=False")
 
     # Prepare model with accelerate
     model = accelerator.prepare(model)
@@ -173,10 +180,7 @@ def dream_inference(args):
                     inputs = tokenizer(instruction, return_tensors='pt')
                     inputs = {k: v.to(accelerator.device) for k, v in inputs.items()}
 
-                    # Reset cache for each sample if cache is available and enabled
-                    if CACHE_AVAILABLE and args.use_cache:
-                        feature_cache = dLLMCache()
-                        feature_cache.reset_cache(inputs['input_ids'].shape[1])
+                    # Fast-dLLM cache is automatically managed, no manual reset needed
 
                     # Generate response with Dream's diffusion process
                     # Check both the model and unwrapped model for the method
@@ -192,7 +196,9 @@ def dream_inference(args):
                                 temperature=args.temperature,
                                 top_p=0.95,
                                 alg=args.alg,  # Add algorithm parameter
-                                alg_temp=args.alg_temp  # Add algorithm temperature
+                                alg_temp=args.alg_temp,  # Add algorithm temperature
+                                threshold=args.threshold,  # Add threshold for cache
+                                dual_cache=args.dual_cache  # Add dual cache support
                             )
 
                         # Extract only the newly generated tokens
@@ -263,15 +269,13 @@ if __name__ == "__main__":
     parser.add_argument("--limit_samples", type=int, default=0,
                        help="限制处理的样本数量，0表示处理全部")
 
-    # Cache parameters
+    # Fast-dLLM Cache parameters
     parser.add_argument("--use_cache", action="store_true", default=True,
-                       help="Enable dLLM-Cache for acceleration")
-    parser.add_argument("--prompt_interval_steps", type=int, default=100,
-                       help="Cache prompt features every N steps")
-    parser.add_argument("--gen_interval_steps", type=int, default=7,
-                       help="Cache generation features every N steps")
-    parser.add_argument("--transfer_ratio", type=float, default=0.25,
-                       help="Transfer ratio for cached features")
+                       help="Enable Fast-dLLM cache for acceleration")
+    parser.add_argument("--dual_cache", action="store_true", default=False,
+                       help="Enable dual cache mode for Fast-dLLM")
+    parser.add_argument("--threshold", type=float, default=0.9,
+                       help="Threshold for cache optimization")
 
     args = parser.parse_args()
 
